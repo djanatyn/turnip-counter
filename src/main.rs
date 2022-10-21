@@ -2,6 +2,7 @@ use peppi::model::enums::item::Type;
 use peppi::model::frame::Frame;
 use peppi::model::game::Frames;
 use peppi::model::item::Item;
+use peppi::model::primitives::Port;
 use std::collections::HashMap;
 use std::{env, fs, io};
 
@@ -21,6 +22,9 @@ struct TurnipData {
 
     /// The first frame the turnip was seen.
     frame: i32,
+
+    /// The initial owner of the turnip.
+    owner: Port,
 }
 
 /// Index pulled turnips by item ID.
@@ -31,6 +35,8 @@ fn parse_turnip(frame: i32, item: &Item) -> Option<(u32, TurnipData)> {
     if item.r#type != Type::PEACH_TURNIP {
         return None;
     };
+
+    let owner: Port = item.owner.expect("no owner").expect("no player");
 
     // turnip face data is in second byte of misc field
     let face_byte = item.misc.expect("no misc data")[1];
@@ -46,7 +52,7 @@ fn parse_turnip(frame: i32, item: &Item) -> Option<(u32, TurnipData)> {
         _ => panic!("unknown state"),
     };
 
-    Some((item.id, TurnipData { face, frame }))
+    Some((item.id, TurnipData { face, frame, owner }))
 }
 
 /// Update TurnipLog when encountering new turnips.
