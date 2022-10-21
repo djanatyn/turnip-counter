@@ -14,52 +14,67 @@ enum TurnipFace {
     Stitch,  // 7
 }
 
-/// Index pulled turnip faces by item ID.
-type TurnipLog = HashMap<u32, TurnipFace>;
+#[derive(Debug)]
+struct TurnipData {
+    /// The face of the turnip.
+    face: TurnipFace,
 
-/// Check to see if the item is a turnip.
-/// If it is, return the item ID + TurnipFace.
-fn is_turnip(item: &Item) -> Option<(u32, TurnipFace)> {
-    if item.r#type == Type::PEACH_TURNIP {
-        let face: TurnipFace = match item.state.0 {
-            0 => TurnipFace::Normal,
-            1 => TurnipFace::Normal,
-            2 => TurnipFace::Normal,
-            3 => TurnipFace::Normal,
-            4 => TurnipFace::Normal,
-            5 => TurnipFace::Winky,
-            6 => TurnipFace::DotEyes,
-            7 => TurnipFace::Stitch,
-            _ => panic!("unknown state"),
-        };
-
-        Some((item.id, face))
-    } else {
-        None
-    }
+    /// The first frame the turnip was seen.
+    frame: i32,
 }
 
-fn log_peach_items(log: &mut TurnipLog, items: Vec<Item>) {
+/// Index pulled turnips by item ID.
+type TurnipLog = HashMap<u32, TurnipData>;
+
+/// Check to see if the item is a turnip.
+fn parse_turnip(frame: i32, item: &Item) -> Option<(u32, TurnipData)> {
+    if item.r#type != Type::PEACH_TURNIP {
+        return None;
+    };
+
+    // turnip face data is in second byte of misc field
+    let face_byte = item.misc.expect("no misc data")[1];
+    let face: TurnipFace = match face_byte {
+        0 => TurnipFace::Normal,
+        1 => TurnipFace::Normal,
+        2 => TurnipFace::Normal,
+        3 => TurnipFace::Normal,
+        4 => TurnipFace::Normal,
+        5 => TurnipFace::Winky,
+        6 => TurnipFace::DotEyes,
+        7 => TurnipFace::Stitch,
+        _ => panic!("unknown state"),
+    };
+
+    Some((item.id, TurnipData { face, frame }))
+}
+
+/// Update TurnipLog when encountering new turnips.
+fn log_peach_items(log: &mut TurnipLog, frame: i32, items: Vec<Item>) {
     for item in items {
-        if let Some((id, face)) = is_turnip(&item) {
-            (*log).insert(id, face);
+        if let Some((id, data)) = parse_turnip(frame, &item) {
+            // create an entry if we haven't seen the turnip before
+            (*log).entry(id).or_insert(data);
         }
     }
 }
 
-/// Search frames for Peach's items.
-fn find_items(frames: Vec<Frame<2>>) {
+/// Search frames for Peach's turnip pulls.
+///
+/// Only supports 2-player games.
+fn find_turnips(frames: Vec<Frame<2>>) -> TurnipLog {
     let mut log: TurnipLog = HashMap::new();
 
     for frame in frames {
         if let Some(items) = frame.items {
-            log_peach_items(&mut log, items);
+            log_peach_items(&mut log, frame.index, items);
         }
     }
 
-    dbg!(log);
+    log
 }
 
+/// For each argument, count turnips.
 fn main() {
     let files = env::args().skip(1).collect::<Vec<String>>();
 
@@ -75,6 +90,8 @@ fn main() {
             _ => panic!("wrong number of players"),
         };
 
-        find_items(frames);
+        // print turnip log
+        let log: TurnipLog = find_turnips(frames);
+        println!("{log:#?}");
     }
 }
