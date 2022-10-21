@@ -67,7 +67,7 @@ fn log_peach_items(log: &mut TurnipLog, frame: i32, items: Vec<Item>) {
     for item in items {
         if let Some((id, data)) = parse_turnip(frame, &item) {
             // create an entry if we haven't seen the turnip before
-            (*log).entry(id).or_insert(data);
+            log.entry(id).or_insert(data);
         }
     }
 }
