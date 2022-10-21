@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use peppi::model::enums::item::Type;
 use peppi::model::frame::Frame;
 use peppi::model::game::Frames;
