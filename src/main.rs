@@ -9,12 +9,17 @@ use std::collections::HashMap;
 use std::{env, fs, io};
 
 /// Possible turnip faces.
+/// Taken from second byte of misc field.
 #[derive(Debug)]
 enum TurnipFace {
-    Normal,  // 0-4
-    Winky,   // 5
-    DotEyes, // 6
-    Stitch,  // 7
+    /// `(0..4).contains(misc[1])`
+    Normal,
+    /// `misc[1] == 5`
+    Winky,
+    /// `misc[1] == 6`
+    DotEyes,
+    /// `misc[1] == 7`
+    Stitch,
 }
 
 #[derive(Debug)]
