@@ -18,6 +18,7 @@ use peppi::model::game::Frames;
 use peppi::model::item::Item;
 use peppi::model::primitives::Port;
 use std::collections::HashMap;
+use std::path::Path;
 use std::{env, fs, io};
 
 /// Possible peach items.
@@ -73,8 +74,6 @@ type ItemLog = HashMap<u32, ItemHistory>;
 
 /// Check to see if the item is a turnip.
 fn parse_item(frame: i32, item: &Item) -> Option<(u32, ItemData, StateSnapshot)> {
-    // TODO: parse all peach items
-
     let kind: PeachItem = match item.r#type {
         Type::BOB_OMB => PeachItem::Bobomb,
         Type::BEAM_SWORD => PeachItem::Beamsword,
@@ -147,24 +146,36 @@ fn find_turnips(frames: Vec<Frame<2>>) -> ItemLog {
     log
 }
 
-/// For each argument, count turnips.
+/// TODO: return Result instead of panicking
+fn read_replay<P: AsRef<Path> + std::fmt::Debug>(path: P) {
+    let f = fs::File::open(path).expect("failed to open");
+    let mut buf = io::BufReader::new(f);
+
+    let game = peppi::game(&mut buf, None, None).expect("failed to parse");
+
+    // 2 player games only
+    let frames = match game.frames {
+        Frames::P2(f) => f,
+        _ => panic!("wrong number of players"),
+    };
+
+    // print turnip log
+    let log: ItemLog = find_turnips(frames);
+    println!("{log:#?}");
+}
+
+/// For each argument, recurse through directories to find replays.
 fn main() {
-    let files = env::args().skip(1).collect::<Vec<String>>();
+    let directories = env::args().skip(1).collect::<Vec<String>>();
+    for path in directories {
+        use walkdir::WalkDir;
 
-    for filename in files {
-        let f = fs::File::open(filename).expect("failed to open");
-        let mut buf = io::BufReader::new(f);
+        dbg!(&path);
 
-        let game = peppi::game(&mut buf, None, None).expect("failed to parse");
-
-        // 2 player games only
-        let frames = match game.frames {
-            Frames::P2(f) => f,
-            _ => panic!("wrong number of players"),
-        };
-
-        // print turnip log
-        let log: ItemLog = find_turnips(frames);
-        println!("{log:#?}");
+        WalkDir::new(path)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .for_each(|e| read_replay(e.path()));
     }
 }
