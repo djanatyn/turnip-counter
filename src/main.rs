@@ -90,7 +90,7 @@ fn parse_item(frame: i32, item: &Item) -> Option<(u32, ItemData, StateSnapshot)>
                 5 => PeachItem::WinkyTurnip,
                 6 => PeachItem::DotEyesTurnip,
                 7 => PeachItem::StitchTurnip,
-                _ => panic!("unknown state"),
+                _ => panic!("unknown turnip face"),
             }
         }
         _ => return None,
