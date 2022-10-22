@@ -822,6 +822,7 @@ name = "turnip-counter"
 version = "0.1.0"
 dependencies = [
  "peppi",
+ "thiserror",
  "walkdir",
 ]
 

@@ -7,4 +7,5 @@ edition = "2021"
 
 [dependencies]
 peppi = "1.0.0-alpha.6"
+thiserror = "1.0.37"
 walkdir = "2.3.2"

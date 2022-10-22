@@ -4,7 +4,6 @@
 //! - csv, sqlite?
 //! - JSON for d3 or plotly
 
-//! TODO: search slippi directory
 //! TODO: get timetsamp of replay
 //! TODO: calculate timestamp of each turnip pull, given TurnipLog
 //! TODO: output information as JSON
@@ -20,7 +19,34 @@ use peppi::model::primitives::Port;
 use std::collections::HashMap;
 use std::path::Path;
 use std::{env, fs, io};
+use thiserror::Error;
+use walkdir::WalkDir;
 
+#[derive(Debug, Error)]
+enum TurnipError {
+    #[error("no misc data")]
+    MissingMisc,
+
+    #[error("only supports 2 player games")]
+    WrongNumberPlayers,
+
+    #[error("not a peach item")]
+    NotPeachItem,
+
+    #[error("unowned item??")]
+    MissingOwner,
+
+    #[error("???")]
+    OwnerNotPlayer,
+
+    #[error("failed to open replay file")]
+    OpenFailed(std::io::Error),
+
+    #[error("failed to parse")]
+    ParseFailed(peppi::ParseError),
+}
+
+type App<T> = Result<T, TurnipError>;
 /// Possible peach items.
 /// Turnip faces are taken from second byte of misc field.
 #[derive(Debug, Clone, Copy)]
@@ -73,7 +99,7 @@ struct ItemHistory {
 type ItemLog = HashMap<u32, ItemHistory>;
 
 /// Check to see if the item is a turnip.
-fn parse_item(frame: i32, item: &Item) -> Option<(u32, ItemData, StateSnapshot)> {
+fn parse_item(frame: i32, item: &Item) -> App<(u32, ItemData, StateSnapshot)> {
     let kind: PeachItem = match item.r#type {
         Type::BOB_OMB => PeachItem::Bobomb,
         Type::BEAM_SWORD => PeachItem::Beamsword,
@@ -92,15 +118,18 @@ fn parse_item(frame: i32, item: &Item) -> Option<(u32, ItemData, StateSnapshot)>
                 _ => panic!("unknown turnip face"),
             }
         }
-        _ => return None,
+        _ => Err(TurnipError::NotPeachItem)?,
     };
 
-    let owner: Port = item.owner.expect("no owner").expect("no player");
+    let owner: Port = item
+        .owner
+        .ok_or(TurnipError::MissingOwner)?
+        .ok_or(TurnipError::OwnerNotPlayer)?;
 
     // we don't know what item states are yet
     let state = ItemState::Unknown(item.state.0);
 
-    Some((
+    Ok((
         item.id,
         ItemData { kind, frame, owner },
         StateSnapshot {
@@ -114,7 +143,7 @@ fn parse_item(frame: i32, item: &Item) -> Option<(u32, ItemData, StateSnapshot)>
 /// Update TurnipLog when encountering new turnips.
 fn log_peach_items(log: &mut ItemLog, frame: i32, items: Vec<Item>) {
     for item in items {
-        if let Some((id, data, state)) = parse_item(frame, &item) {
+        if let Ok((id, data, state)) = parse_item(frame, &item) {
             // create an entry if we haven't seen the turnip before
             let entry = log.entry(id).or_insert(ItemHistory {
                 data,
@@ -146,12 +175,12 @@ fn find_turnips(frames: Vec<Frame<2>>) -> ItemLog {
     log
 }
 
-/// TODO: return Result instead of panicking
-fn read_replay<P: AsRef<Path> + std::fmt::Debug>(path: P) {
-    let f = fs::File::open(path).expect("failed to open");
+/// Parse replay file, returning an ItemLog if successful.
+fn read_replay<P: AsRef<Path>>(path: P) -> App<ItemLog> {
+    let f = fs::File::open(path).map_err(|e| TurnipError::OpenFailed(e))?;
     let mut buf = io::BufReader::new(f);
 
-    let game = peppi::game(&mut buf, None, None).expect("failed to parse");
+    let game = peppi::game(&mut buf, None, None).map_err(|e| TurnipError::ParseFailed(e))?;
 
     // 2 player games only
     let frames = match game.frames {
@@ -162,20 +191,21 @@ fn read_replay<P: AsRef<Path> + std::fmt::Debug>(path: P) {
     // print turnip log
     let log: ItemLog = find_turnips(frames);
     println!("{log:#?}");
+
+    Ok(log)
 }
 
 /// For each argument, recurse through directories to find replays.
 fn main() {
     let directories = env::args().skip(1).collect::<Vec<String>>();
     for path in directories {
-        use walkdir::WalkDir;
-
-        dbg!(&path);
-
-        WalkDir::new(path)
+        let results = WalkDir::new(path)
             .into_iter()
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file())
-            .for_each(|e| read_replay(e.path()));
+            .map(|e| read_replay(e.path()))
+            .collect::<Vec<App<ItemLog>>>();
+
+        dbg!(results);
     }
 }
