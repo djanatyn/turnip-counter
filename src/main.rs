@@ -1,5 +1,17 @@
 #![allow(dead_code)]
 
+//! TODO: how are you outputting this data?
+//! - csv, sqlite?
+//! - JSON for d3 or plotly
+
+//! TODO: search slippi directory
+//! TODO: get timetsamp of replay
+//! TODO: calculate timestamp of each turnip pull, given TurnipLog
+//! TODO: output information as JSON
+//! TODO: d3 visualization for time series
+//! - <https://observablehq.com/@d3/stacked-bar-chart>
+//! - <https://plotly.com/javascript/histograms/#colored-and-styled-histograms>
+
 use peppi::model::enums::item::Type;
 use peppi::model::frame::Frame;
 use peppi::model::game::Frames;
@@ -8,100 +20,104 @@ use peppi::model::primitives::Port;
 use std::collections::HashMap;
 use std::{env, fs, io};
 
-/// Possible turnip faces.
-/// Taken from second byte of misc field.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-enum TurnipFace {
+/// Possible peach items.
+/// Turnip faces are taken from second byte of misc field.
+#[derive(Debug, Clone, Copy)]
+enum PeachItem {
     /// `(0..4).contains(misc[1])`
-    Normal,
+    NormalTurnip,
     /// `misc[1] == 5`
-    Winky,
+    WinkyTurnip,
     /// `misc[1] == 6`
-    DotEyes,
+    DotEyesTurnip,
     /// `misc[1] == 7`
-    Stitch,
+    StitchTurnip,
+    /// Electric.
+    Beamsword,
+    /// Explosive!
+    Bobomb,
+    /// Friendly :)
+    MrSaturn,
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
-struct TurnipData {
-    /// The face of the turnip.
-    face: TurnipFace,
-
-    /// The first frame the turnip was seen.
+#[derive(Debug, Clone, Copy)]
+struct ItemData {
+    /// What kind of item?
+    kind: PeachItem,
+    /// The first frame the item was seen.
     frame: i32,
-
-    /// The initial owner of the turnip.
+    /// The initial owner of the item.
     owner: Port,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-enum TurnipState {
-    Zero,  // Unknown
-    One,   // Unknown
-    Two,   // Unknown
-    Three, // Unknown
-    Four,  // Unknown
+enum ItemState {
+    Unknown(u8),
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct StateSnapshot {
     frame: i32,
-    state: TurnipState,
+    state: ItemState,
+    owner: Port,
 }
 
 #[derive(Debug)]
-struct TurnipHistory {
-    data: TurnipData,
+struct ItemHistory {
+    data: ItemData,
     history: Vec<StateSnapshot>,
 }
 
 /// Index pulled turnips by item ID.
-type TurnipLog = HashMap<u32, TurnipHistory>;
+type ItemLog = HashMap<u32, ItemHistory>;
 
 /// Check to see if the item is a turnip.
-fn parse_turnip(frame: i32, item: &Item) -> Option<(u32, TurnipData, StateSnapshot)> {
-    if item.r#type != Type::PEACH_TURNIP {
-        return None;
+fn parse_item(frame: i32, item: &Item) -> Option<(u32, ItemData, StateSnapshot)> {
+    // TODO: parse all peach items
+
+    let kind: PeachItem = match item.r#type {
+        Type::BOB_OMB => PeachItem::Bobomb,
+        Type::BEAM_SWORD => PeachItem::Beamsword,
+        Type::MR_SATURN => PeachItem::MrSaturn,
+        Type::PEACH_TURNIP => {
+            let face_byte = item.misc.expect("no misc data")[1];
+            match face_byte {
+                0 => PeachItem::NormalTurnip,
+                1 => PeachItem::NormalTurnip,
+                2 => PeachItem::NormalTurnip,
+                3 => PeachItem::NormalTurnip,
+                4 => PeachItem::NormalTurnip,
+                5 => PeachItem::WinkyTurnip,
+                6 => PeachItem::DotEyesTurnip,
+                7 => PeachItem::StitchTurnip,
+                _ => panic!("unknown state"),
+            }
+        }
+        _ => return None,
     };
 
     let owner: Port = item.owner.expect("no owner").expect("no player");
 
-    // turnip face data is in second byte of misc field
-    let face_byte = item.misc.expect("no misc data")[1];
-    let face: TurnipFace = match face_byte {
-        0 => TurnipFace::Normal,
-        1 => TurnipFace::Normal,
-        2 => TurnipFace::Normal,
-        3 => TurnipFace::Normal,
-        4 => TurnipFace::Normal,
-        5 => TurnipFace::Winky,
-        6 => TurnipFace::DotEyes,
-        7 => TurnipFace::Stitch,
-        _ => panic!("unknown state"),
-    };
-
-    let state = match item.state.0 {
-        0 => TurnipState::Zero,
-        1 => TurnipState::One,
-        2 => TurnipState::Two,
-        3 => TurnipState::Three,
-        4 => TurnipState::Four,
-        _ => panic!("unknown state"),
-    };
+    // we don't know what item states are yet
+    let state = ItemState::Unknown(item.state.0);
 
     Some((
         item.id,
-        TurnipData { face, frame, owner },
-        StateSnapshot { frame, state },
+        ItemData { kind, frame, owner },
+        StateSnapshot {
+            frame,
+            state,
+            owner,
+        },
     ))
 }
 
 /// Update TurnipLog when encountering new turnips.
-fn log_peach_items(log: &mut TurnipLog, frame: i32, items: Vec<Item>) {
+fn log_peach_items(log: &mut ItemLog, frame: i32, items: Vec<Item>) {
     for item in items {
-        if let Some((id, data, state)) = parse_turnip(frame, &item) {
+        if let Some((id, data, state)) = parse_item(frame, &item) {
             // create an entry if we haven't seen the turnip before
-            let entry = log.entry(id).or_insert(TurnipHistory {
+            let entry = log.entry(id).or_insert(ItemHistory {
                 data,
                 history: vec![state],
             });
@@ -119,8 +135,8 @@ fn log_peach_items(log: &mut TurnipLog, frame: i32, items: Vec<Item>) {
 /// Search frames for Peach's turnip pulls.
 ///
 /// Only supports 2-player games.
-fn find_turnips(frames: Vec<Frame<2>>) -> TurnipLog {
-    let mut log: TurnipLog = HashMap::new();
+fn find_turnips(frames: Vec<Frame<2>>) -> ItemLog {
+    let mut log: ItemLog = HashMap::new();
 
     for frame in frames {
         if let Some(items) = frame.items {
@@ -148,7 +164,7 @@ fn main() {
         };
 
         // print turnip log
-        let log: TurnipLog = find_turnips(frames);
+        let log: ItemLog = find_turnips(frames);
         println!("{log:#?}");
     }
 }
