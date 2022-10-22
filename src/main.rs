@@ -10,7 +10,7 @@ use std::{env, fs, io};
 
 /// Possible turnip faces.
 /// Taken from second byte of misc field.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum TurnipFace {
     /// `(0..4).contains(misc[1])`
     Normal,
@@ -22,7 +22,7 @@ enum TurnipFace {
     Stitch,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 struct TurnipData {
     /// The face of the turnip.
     face: TurnipFace,
@@ -34,11 +34,32 @@ struct TurnipData {
     owner: Port,
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum TurnipState {
+    Zero,  // Unknown
+    One,   // Unknown
+    Two,   // Unknown
+    Three, // Unknown
+    Four,  // Unknown
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+struct StateSnapshot {
+    frame: i32,
+    state: TurnipState,
+}
+
+#[derive(Debug)]
+struct TurnipHistory {
+    data: TurnipData,
+    history: Vec<StateSnapshot>,
+}
+
 /// Index pulled turnips by item ID.
-type TurnipLog = HashMap<u32, TurnipData>;
+type TurnipLog = HashMap<u32, TurnipHistory>;
 
 /// Check to see if the item is a turnip.
-fn parse_turnip(frame: i32, item: &Item) -> Option<(u32, TurnipData)> {
+fn parse_turnip(frame: i32, item: &Item) -> Option<(u32, TurnipData, StateSnapshot)> {
     if item.r#type != Type::PEACH_TURNIP {
         return None;
     };
@@ -59,15 +80,38 @@ fn parse_turnip(frame: i32, item: &Item) -> Option<(u32, TurnipData)> {
         _ => panic!("unknown state"),
     };
 
-    Some((item.id, TurnipData { face, frame, owner }))
+    let state = match item.state.0 {
+        0 => TurnipState::Zero,
+        1 => TurnipState::One,
+        2 => TurnipState::Two,
+        3 => TurnipState::Three,
+        4 => TurnipState::Four,
+        _ => panic!("unknown state"),
+    };
+
+    Some((
+        item.id,
+        TurnipData { face, frame, owner },
+        StateSnapshot { frame, state },
+    ))
 }
 
 /// Update TurnipLog when encountering new turnips.
 fn log_peach_items(log: &mut TurnipLog, frame: i32, items: Vec<Item>) {
     for item in items {
-        if let Some((id, data)) = parse_turnip(frame, &item) {
+        if let Some((id, data, state)) = parse_turnip(frame, &item) {
             // create an entry if we haven't seen the turnip before
-            log.entry(id).or_insert(data);
+            let entry = log.entry(id).or_insert(TurnipHistory {
+                data,
+                history: vec![state],
+            });
+
+            // update history if state has changed
+            if let Some(last_state) = entry.history.last() {
+                if last_state.state != state.state {
+                    entry.history.push(state);
+                }
+            }
         }
     }
 }
