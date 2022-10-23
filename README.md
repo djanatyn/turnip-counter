@@ -11,6 +11,19 @@ Applied 0/migrate init (3.274057ms)
 ❯ DATABASE_URL=sqlite://turnips.db cargo run -- ~/Slippi/2022-10/
 ```
 
+```sql
+SELECT 
+    datetime(start_time, "unixepoch", "localtime"),
+    p1_name,
+    p2_name
+FROM games
+ORDER BY start_time DESC
+LIMIT 3
+-- 2022-10-19 07:32:26|DJAN|TFD
+-- 2022-10-18 21:17:35|DJAN|ahrin
+-- 2022-10-18 20:56:47|DJAN|DoobOfTheLaw
+```
+
 ```
     Finished dev [unoptimized + debuginfo] target(s) in 0.08s
      Running `target/debug/turnip-counter /home/djanatyn/Slippi/2022-10/`
