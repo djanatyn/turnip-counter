@@ -1,12 +1,5 @@
 #![allow(dead_code)]
 
-//! TODO: how are you outputting this data?
-//! - csv, sqlite?
-//! - JSON for d3 or plotly
-
-//! TODO: get timetsamp of replay
-//! TODO: calculate timestamp of each turnip pull, given TurnipLog
-//! TODO: output information as JSON
 //! TODO: d3 visualization for time series
 //! - <https://observablehq.com/@d3/stacked-bar-chart>
 //! - <https://plotly.com/javascript/histograms/#colored-and-styled-histograms>
@@ -15,13 +8,18 @@ use peppi::model::enums::item::Type;
 use peppi::model::frame::Frame;
 use peppi::model::game::Frames;
 use peppi::model::item::Item;
+use peppi::model::metadata::Player;
 use peppi::model::primitives::Port;
+use sqlx::migrate::Migrator;
+use sqlx::sqlite::SqlitePoolOptions;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::PathBuf;
 use std::{env, fs, io};
 use thiserror::Error;
 use walkdir::WalkDir;
 
+static MIGRATOR: Migrator = sqlx::migrate!("db/migrations");
+const DATABASE_URL: &str = "sqlite://turnips.db";
 #[derive(Debug, Error)]
 enum TurnipError {
     #[error("no misc data")]
@@ -47,6 +45,7 @@ enum TurnipError {
 }
 
 type App<T> = Result<T, TurnipError>;
+
 /// Possible peach items.
 /// Turnip faces are taken from second byte of misc field.
 #[derive(Debug, Clone, Copy)]
@@ -176,11 +175,13 @@ fn find_turnips(frames: Vec<Frame<2>>) -> ItemLog {
 }
 
 /// Parse replay file, returning an ItemLog if successful.
-fn read_replay<P: AsRef<Path>>(path: P) -> App<ItemLog> {
-    let f = fs::File::open(path).map_err(|e| TurnipError::OpenFailed(e))?;
+async fn read_replay(pool: &sqlx::SqlitePool, path: PathBuf) -> App<ItemLog> {
+    let mut conn = pool.acquire().await.expect("failed to acquire connection");
+
+    let f = fs::File::open(&path).map_err(TurnipError::OpenFailed)?;
     let mut buf = io::BufReader::new(f);
 
-    let game = peppi::game(&mut buf, None, None).map_err(|e| TurnipError::ParseFailed(e))?;
+    let game = peppi::game(&mut buf, None, None).map_err(TurnipError::ParseFailed)?;
 
     // 2 player games only
     let frames = match game.frames {
@@ -190,22 +191,73 @@ fn read_replay<P: AsRef<Path>>(path: P) -> App<ItemLog> {
 
     // print turnip log
     let log: ItemLog = find_turnips(frames);
-    println!("{log:#?}");
+
+    let players = game.metadata.players.expect("no players");
+    let start_time = game
+        .metadata
+        .date
+        .expect("failed to get start time")
+        .timestamp()
+        .to_string();
+
+    let p1: &Player = players
+        .iter()
+        .filter(|p| matches!(p.port, Port::P1))
+        .collect::<Vec<&Player>>()
+        .pop()
+        .expect("could not find P1");
+    let p2: &Player = players
+        .iter()
+        .filter(|p| matches!(p.port, Port::P2))
+        .collect::<Vec<&Player>>()
+        .pop()
+        .expect("could not find P2");
+
+    let p1_netplay = p1.netplay.as_ref().expect("could not get p1 netplay data");
+    let p1_name = &p1_netplay.name;
+    let p1_code = &p1_netplay.code;
+
+    let p2_netplay = p2.netplay.as_ref().expect("could not get p2 netplay data");
+    let p2_code = &p2_netplay.code;
+    let p2_name = &p2_netplay.name;
+
+    // TODO: move to db function / task
+    let filename = path.to_str().expect("failed to get filename");
+    let update = sqlx::query!(
+        "INSERT INTO games (filename, start_time, p1_name, p1_code, p2_name, p2_code) VALUES (?, ?, ?, ?, ?, ?)",
+        filename, start_time, p1_name, p1_code, p2_name, p2_code
+    )
+    .execute(&mut conn)
+    .await
+    .expect("failed to run query");
+
+    dbg!(&log);
+    dbg!(update);
 
     Ok(log)
 }
 
 /// For each argument, recurse through directories to find replays.
-fn main() {
+#[tokio::main]
+async fn main() {
+    // run database migrations
+    let pool = SqlitePoolOptions::new()
+        .connect(DATABASE_URL)
+        .await
+        .expect("failed");
+    MIGRATOR.run(&pool).await.expect("failed");
+
+    // read replay data
     let directories = env::args().skip(1).collect::<Vec<String>>();
     for path in directories {
-        let results = WalkDir::new(path)
+        let replays = WalkDir::new(path)
             .into_iter()
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file())
-            .map(|e| read_replay(e.path()))
-            .collect::<Vec<App<ItemLog>>>();
+            .map(|e| read_replay(&pool, e.into_path()))
+            .collect::<Vec<_>>();
 
+        let results = futures::future::join_all(replays).await;
         dbg!(results);
     }
 }
