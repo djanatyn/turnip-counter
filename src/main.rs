@@ -20,6 +20,9 @@ use walkdir::WalkDir;
 
 static MIGRATOR: Migrator = sqlx::migrate!("db/migrations");
 const DATABASE_URL: &str = "sqlite://turnips.db";
+
+// TODO: error handling for database
+/// Errors handled by turnip-counter.
 #[derive(Debug, Error)]
 enum TurnipError {
     #[error("no misc data")]
@@ -189,9 +192,10 @@ async fn read_replay(pool: &sqlx::SqlitePool, path: PathBuf) -> App<ItemLog> {
         _ => panic!("wrong number of players"),
     };
 
-    // print turnip log
     let log: ItemLog = find_turnips(frames);
+    dbg!(&log);
 
+    // TODO: move to db function / task
     let players = game.metadata.players.expect("no players");
     let start_time = game
         .metadata
@@ -221,7 +225,6 @@ async fn read_replay(pool: &sqlx::SqlitePool, path: PathBuf) -> App<ItemLog> {
     let p2_code = &p2_netplay.code;
     let p2_name = &p2_netplay.name;
 
-    // TODO: move to db function / task
     let filename = path.to_str().expect("failed to get filename");
     let update = sqlx::query!(
         "INSERT INTO games (filename, start_time, p1_name, p1_code, p2_name, p2_code) VALUES (?, ?, ?, ?, ?, ?)",
@@ -231,7 +234,6 @@ async fn read_replay(pool: &sqlx::SqlitePool, path: PathBuf) -> App<ItemLog> {
     .await
     .expect("failed to run query");
 
-    dbg!(&log);
     dbg!(update);
 
     Ok(log)
@@ -246,6 +248,9 @@ async fn main() {
         .await
         .expect("failed");
     MIGRATOR.run(&pool).await.expect("failed");
+
+    // TODO: instead of acquiring pool for each file,
+    // use mpsc queue + message passing w/db worker for updates
 
     // read replay data
     let directories = env::args().skip(1).collect::<Vec<String>>();
