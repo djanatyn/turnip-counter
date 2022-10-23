@@ -8,8 +8,11 @@ CREATE TABLE IF NOT EXISTS games (
     p2_code TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS item (
+CREATE TABLE IF NOT EXISTS items (
     id INTEGER PRIMARY KEY NOT NULL,
     game_id INTEGER NOT NULL,
-    FOREIGN KEY (game_id) REFERENCES game (id)
+    item_id INTEGER NOT NULL,
+    frame INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    FOREIGN KEY (game_id) REFERENCES games (id)
 );
