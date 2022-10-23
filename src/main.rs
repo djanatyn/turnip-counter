@@ -1,5 +1,12 @@
 #![allow(dead_code)]
 
+//! TODO: report on failed parsing (miette)
+//! TODO: session table, session start time, start -> {success, error}
+//! TODO: limit vegetable pulls to my character (DJAN)
+//! TODO: record vegetable pulls in database
+//! TODO: update README
+//! TODO: get sample over time duration?
+//! TODO: compare stitch pulls against EV for sample
 //! TODO: d3 visualization for time series
 //! - <https://observablehq.com/@d3/stacked-bar-chart>
 //! - <https://plotly.com/javascript/histograms/#colored-and-styled-histograms>
