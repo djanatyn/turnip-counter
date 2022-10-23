@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::{env, fs, io};
 use thiserror::Error;
+use tokio::sync::mpsc::{self, Receiver, Sender};
 use walkdir::WalkDir;
 
 static MIGRATOR: Migrator = sqlx::migrate!("db/migrations");
@@ -104,8 +105,50 @@ struct ItemHistory {
     history: Vec<StateSnapshot>,
 }
 
+#[derive(Debug, Clone)]
+enum DBCommand {
+    Item {
+        game_id: String,
+        item_id: String,
+        frame: String,
+        kind: String,
+    },
+}
+
 /// Index pulled turnips by item ID.
 type ItemLog = HashMap<u32, ItemHistory>;
+
+async fn db_worker(pool: &sqlx::SqlitePool, rx: &mut Receiver<DBCommand>) -> App<()> {
+    eprintln!("db worker up");
+
+    let mut conn = pool.acquire().await.expect("failed to acquire connection");
+    while let Some(cmd) = rx.recv().await {
+        eprintln!("db command: {cmd:?}");
+
+        match cmd {
+            DBCommand::Item {
+                game_id,
+                item_id,
+                frame,
+                kind,
+            } => {
+                sqlx::query!(
+                    "INSERT INTO items (game_id, item_id, frame, kind) VALUES (?, ?, ?, ?)",
+                    game_id,
+                    item_id,
+                    frame,
+                    kind
+                )
+                .execute(&mut conn)
+                .await
+                .expect("failed to record item");
+            }
+        }
+    }
+
+    eprintln!("db worker shutting down");
+    Ok(())
+}
 
 /// Check to see if the item is a turnip.
 fn parse_item(frame: i32, item: &Item) -> App<(u32, ItemData, StateSnapshot)> {
@@ -185,8 +228,12 @@ fn find_turnips(frames: Vec<Frame<2>>) -> ItemLog {
 }
 
 /// Parse replay file, returning an ItemLog if successful.
-async fn read_replay(pool: &sqlx::SqlitePool, path: PathBuf) -> App<ItemLog> {
-    let mut conn = pool.acquire().await.expect("failed to acquire connection");
+async fn read_replay(
+    pool: &sqlx::SqlitePool,
+    tx: Sender<DBCommand>,
+    path: PathBuf,
+) -> App<ItemLog> {
+    eprintln!("processing replay {path:?}");
 
     let f = fs::File::open(&path).map_err(TurnipError::OpenFailed)?;
     let mut buf = io::BufReader::new(f);
@@ -200,7 +247,6 @@ async fn read_replay(pool: &sqlx::SqlitePool, path: PathBuf) -> App<ItemLog> {
     };
 
     let log: ItemLog = find_turnips(frames);
-    dbg!(&log);
 
     // TODO: move to db function / task
     let players = game.metadata.players.expect("no players");
@@ -233,6 +279,9 @@ async fn read_replay(pool: &sqlx::SqlitePool, path: PathBuf) -> App<ItemLog> {
     let p2_name = &p2_netplay.name;
 
     let filename = path.to_str().expect("failed to get filename");
+
+    eprintln!("creating game record");
+    let mut conn = pool.acquire().await.expect("failed to acquire connection");
     let update = sqlx::query!(
         "INSERT INTO games (filename, start_time, p1_name, p1_code, p2_name, p2_code) VALUES (?, ?, ?, ?, ?, ?)",
         filename, start_time, p1_name, p1_code, p2_name, p2_code
@@ -242,6 +291,7 @@ async fn read_replay(pool: &sqlx::SqlitePool, path: PathBuf) -> App<ItemLog> {
     .expect("failed to run query");
 
     let game_id = update.last_insert_rowid();
+    eprintln!("created game record: {game_id}");
 
     // which player am I?
     let me: &Player = [(p1_code, p1), (p2_code, p2)]
@@ -258,16 +308,15 @@ async fn read_replay(pool: &sqlx::SqlitePool, path: PathBuf) -> App<ItemLog> {
         }
 
         let kind = format!("{:?}", history.data.kind);
-        sqlx::query!(
-            "INSERT INTO items (game_id, item_id, frame, kind) VALUES (?, ?, ?, ?)",
-            game_id,
-            item_id,
-            history.data.frame,
-            kind
-        )
-        .execute(&mut conn)
+        eprintln!("sending DB command");
+        tx.send(DBCommand::Item {
+            game_id: game_id.to_string(),
+            item_id: item_id.to_string(),
+            frame: history.data.frame.to_string(),
+            kind,
+        })
         .await
-        .expect("failed to record item");
+        .expect("failed to send");
     }
 
     Ok(log)
@@ -283,20 +332,30 @@ async fn main() {
         .expect("failed");
     MIGRATOR.run(&pool).await.expect("failed");
 
-    // TODO: instead of acquiring pool for each file,
-    // use mpsc queue + message passing w/db worker for updates
+    // open up message queue for db commands
+    let (tx, mut rx) = mpsc::channel::<DBCommand>(32);
+    let db_task = db_worker(&pool, &mut rx);
 
-    // read replay data
-    let directories = env::args().skip(1).collect::<Vec<String>>();
-    for path in directories {
-        let replays = WalkDir::new(path)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file())
-            .map(|e| read_replay(&pool, e.into_path()))
-            .collect::<Vec<_>>();
+    // read replay directory
+    let replay_directory = env::args().skip(1).collect::<String>();
+    let replays = WalkDir::new(replay_directory)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .map(|e| read_replay(&pool, tx.clone(), e.into_path()))
+        .collect::<Vec<_>>();
+    // let paths = WalkDir::new(path)
+    //     .into_iter()
+    //     .filter_map(|e| e.ok())
+    //     .filter(|e| e.file_type().is_file())
+    //     .map(|e| e.into_path())
+    //     .collect::<Vec<PathBuf>>();
 
-        let results = futures::future::join_all(replays).await;
-        dbg!(results);
-    }
+    use futures::future::{join, join_all};
+    let replay_results = join_all(replays);
+
+    let (db_finished, replay_finished) = join(db_task, replay_results).await;
+
+    db_finished.expect("failed");
+    dbg!(replay_finished);
 }
