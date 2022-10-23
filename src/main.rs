@@ -241,7 +241,34 @@ async fn read_replay(pool: &sqlx::SqlitePool, path: PathBuf) -> App<ItemLog> {
     .await
     .expect("failed to run query");
 
-    dbg!(update);
+    let game_id = update.last_insert_rowid();
+
+    // which player am I?
+    let me: &Player = [(p1_code, p1), (p2_code, p2)]
+        .iter()
+        .filter_map(|(code, player)| (*code == "ACAB#420").then(|| *player))
+        .collect::<Vec<&Player>>()
+        .pop()
+        .expect("failed to find DJAN!");
+
+    for (item_id, history) in &log {
+        // only record my turnips
+        if history.data.owner != me.port {
+            continue;
+        }
+
+        let kind = format!("{:?}", history.data.kind);
+        sqlx::query!(
+            "INSERT INTO items (game_id, item_id, frame, kind) VALUES (?, ?, ?, ?)",
+            game_id,
+            item_id,
+            history.data.frame,
+            kind
+        )
+        .execute(&mut conn)
+        .await
+        .expect("failed to record item");
+    }
 
     Ok(log)
 }
