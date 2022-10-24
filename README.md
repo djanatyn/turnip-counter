@@ -25,7 +25,7 @@ I'm using the [`peppi`](https://lib.rs/crates/peppi) Rust library to parse repla
 ## background
 
 When Peach pulls items in melee, the [items pulled are random](https://www.ssbwiki.com/Peach_(SSBM)/Down_special), and we have expected values based on our [understanding of Melee's RNG](https://www.reddit.com/r/SSBM/comments/71gn1d/the_basics_of_rng_in_melee/):
-```
+
 | Type                                   | Damage | Probability         |
 |----------------------------------------|--------|---------------------|
 | Normal                                 | 6-10%  | 4445/7424 ≈ 59.873% |
@@ -36,10 +36,9 @@ When Peach pulls items in melee, the [items pulled are random](https://www.ssbwi
 | Wink                                   | 10-14% | 508/7424 ≈ 6.843%   |
 | Dot Eyes                               | 16-20% | 127/7424 ≈ 1.711%   |
 | Stitch Face                            | 34-38% | 127/7424 ≈ 1.711%   |
-| [Mr. Saturn](/Mr._Saturn "Mr. Saturn") | —      | 3/768 ≈ 0.391%      |
-| [Bob-omb](/Bob-omb "Bob-omb")          | —      | 2/768 ≈ 0.260%      |
-| [Beam Sword](/Beam_Sword "Beam Sword") | —      | 1/768 ≈ 0.130%      |
-```
+| Mr. Saturn                             | —      | 3/768 ≈ 0.391%      |
+| Bob-omb                                | —      | 2/768 ≈ 0.260%      |
+| Beam Sword                             | —      | 1/768 ≈ 0.130%      |
 
 ## example usage
 
