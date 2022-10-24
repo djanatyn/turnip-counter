@@ -1,22 +1,14 @@
 #![allow(dead_code)]
 
-//! TODO: report on failed parsing (miette)
 //! TODO: session table, session start time, start -> {success, error}
-//! TODO: limit vegetable pulls to my character (DJAN)
-//! TODO: record vegetable pulls in database
-//! TODO: update README
-//! TODO: get sample over time duration?
-//! TODO: compare stitch pulls against EV for sample
 //! TODO: d3 visualization for time series
 //! - <https://observablehq.com/@d3/stacked-bar-chart>
 //! - <https://plotly.com/javascript/histograms/#colored-and-styled-histograms>
 
+use futures::future::join_all;
 use peppi::model::enums::item::Type;
-use peppi::model::frame::Frame;
-use peppi::model::game::Frames;
-use peppi::model::item::Item;
-use peppi::model::metadata::Player;
-use peppi::model::primitives::Port;
+use peppi::model::game::{Frames, Game};
+use peppi::model::{frame::Frame, item::Item, metadata::Player, primitives::Port};
 use sqlx::migrate::Migrator;
 use sqlx::sqlite::SqlitePoolOptions;
 use std::collections::HashMap;
@@ -106,6 +98,17 @@ struct ItemHistory {
 }
 
 #[derive(Debug, Clone)]
+struct GameMetadata {
+    filename: String,
+    start_time: String,
+    p1_name: String,
+    p1_code: String,
+    p2_name: String,
+    p2_code: String,
+    my_port: Port,
+}
+
+#[derive(Debug, Clone)]
 enum DBCommand {
     Item {
         game_id: String,
@@ -118,36 +121,110 @@ enum DBCommand {
 /// Index pulled turnips by item ID.
 type ItemLog = HashMap<u32, ItemHistory>;
 
-async fn db_worker(pool: &sqlx::SqlitePool, rx: &mut Receiver<DBCommand>) -> App<()> {
-    eprintln!("db worker up");
+/// Parse replay file with peppi.
+fn parse_replay(path: &PathBuf) -> App<Game> {
+    let f = fs::File::open(&path).map_err(TurnipError::OpenFailed)?;
+    let mut buf = io::BufReader::new(f);
 
-    let mut conn = pool.acquire().await.expect("failed to acquire connection");
-    while let Some(cmd) = rx.recv().await {
-        eprintln!("db command: {cmd:?}");
+    peppi::game(&mut buf, None, None).map_err(TurnipError::ParseFailed)
+}
 
-        match cmd {
-            DBCommand::Item {
-                game_id,
-                item_id,
-                frame,
-                kind,
-            } => {
-                sqlx::query!(
-                    "INSERT INTO items (game_id, item_id, frame, kind) VALUES (?, ?, ?, ?)",
-                    game_id,
-                    item_id,
-                    frame,
-                    kind
-                )
-                .execute(&mut conn)
-                .await
-                .expect("failed to record item");
-            }
+/// Extract metadata to record for parsed game.
+fn game_metadata(path: PathBuf, game: &Game) -> App<GameMetadata> {
+    let players = game.metadata.players.as_ref().expect("no players");
+    let start_time = game
+        .metadata
+        .date
+        .expect("failed to get start time")
+        .timestamp()
+        .to_string();
+
+    let p1: &Player = players
+        .iter()
+        .filter(|p| matches!(p.port, Port::P1))
+        .collect::<Vec<&Player>>()
+        .pop()
+        .expect("could not find P1");
+    let p2: &Player = players
+        .iter()
+        .filter(|p| matches!(p.port, Port::P2))
+        .collect::<Vec<&Player>>()
+        .pop()
+        .expect("could not find P2");
+
+    let p1_netplay = p1.netplay.as_ref().expect("could not get p1 netplay data");
+    let p1_name = p1_netplay.name.to_string();
+    let p1_code = p1_netplay.code.to_string();
+
+    let p2_netplay = p2.netplay.as_ref().expect("could not get p2 netplay data");
+    let p2_code = p2_netplay.code.to_owned();
+    let p2_name = p2_netplay.code.to_owned();
+
+    let filename = path.to_str().expect("failed to get filename").to_string();
+
+    let my_port: Port = [(&p1_code, &p1), (&p2_code, &p2)]
+        .iter()
+        .filter_map(|(code, player)| (*code == "ACAB#420").then(|| *player))
+        .collect::<Vec<&&Player>>()
+        .pop()
+        .expect("failed to find DJAN!")
+        .port;
+
+    Ok(GameMetadata {
+        filename,
+        start_time,
+        p1_name,
+        p1_code,
+        p2_name,
+        p2_code,
+        my_port,
+    })
+}
+
+/// Parse replay file, returning an ItemLog if successful.
+fn log_items(game: Game) -> App<ItemLog> {
+    // 2 player games only
+    let frames = match game.frames {
+        Frames::P2(f) => f,
+        _ => panic!("wrong number of players"),
+    };
+
+    Ok(find_turnips(frames))
+}
+
+/// Search frames for Peach's turnip pulls.
+///
+/// Only supports 2-player games.
+fn find_turnips(frames: Vec<Frame<2>>) -> ItemLog {
+    let mut log: ItemLog = HashMap::new();
+
+    for frame in frames {
+        if let Some(items) = frame.items {
+            log_peach_items(&mut log, frame.index, items);
         }
     }
 
-    eprintln!("db worker shutting down");
-    Ok(())
+    log
+}
+
+/// Update TurnipLog when encountering new turnips.
+fn log_peach_items(log: &mut ItemLog, frame: i32, items: Vec<Item>) {
+    for item in items {
+        if let Ok((id, data, state)) = parse_item(frame, &item) {
+            // create an entry if we haven't seen the turnip before
+            let entry = log.entry(id).or_insert(ItemHistory {
+                data,
+                history: vec![state],
+            });
+
+            // update history if state has changed
+            if let Some(last_state) = entry.history.last() {
+                if last_state.state != state.state {
+                    entry.history.push(state);
+                }
+            }
+        }
+    }
 }
 
 /// Check to see if the item is a turnip.
@@ -192,123 +269,15 @@ fn parse_item(frame: i32, item: &Item) -> App<(u32, ItemData, StateSnapshot)> {
     ))
 }
 
-/// Update TurnipLog when encountering new turnips.
-fn log_peach_items(log: &mut ItemLog, frame: i32, items: Vec<Item>) {
-    for item in items {
-        if let Ok((id, data, state)) = parse_item(frame, &item) {
-            // create an entry if we haven't seen the turnip before
-            let entry = log.entry(id).or_insert(ItemHistory {
-                data,
-                history: vec![state],
-            });
-
-            // update history if state has changed
-            if let Some(last_state) = entry.history.last() {
-                if last_state.state != state.state {
-                    entry.history.push(state);
-                }
-            }
-        }
-    }
-}
-
-/// Search frames for Peach's turnip pulls.
-///
-/// Only supports 2-player games.
-fn find_turnips(frames: Vec<Frame<2>>) -> ItemLog {
-    let mut log: ItemLog = HashMap::new();
-
-    for frame in frames {
-        if let Some(items) = frame.items {
-            log_peach_items(&mut log, frame.index, items);
-        }
-    }
-
-    log
-}
-
-/// Parse replay file, returning an ItemLog if successful.
-async fn read_replay(
-    pool: &sqlx::SqlitePool,
-    tx: Sender<DBCommand>,
-    path: PathBuf,
-) -> App<ItemLog> {
-    eprintln!("processing replay {path:?}");
-
-    let f = fs::File::open(&path).map_err(TurnipError::OpenFailed)?;
-    let mut buf = io::BufReader::new(f);
-
-    let game = peppi::game(&mut buf, None, None).map_err(TurnipError::ParseFailed)?;
-
-    // 2 player games only
-    let frames = match game.frames {
-        Frames::P2(f) => f,
-        _ => panic!("wrong number of players"),
-    };
-
-    let log: ItemLog = find_turnips(frames);
-
-    // TODO: move to db function / task
-    let players = game.metadata.players.expect("no players");
-    let start_time = game
-        .metadata
-        .date
-        .expect("failed to get start time")
-        .timestamp()
-        .to_string();
-
-    let p1: &Player = players
-        .iter()
-        .filter(|p| matches!(p.port, Port::P1))
-        .collect::<Vec<&Player>>()
-        .pop()
-        .expect("could not find P1");
-    let p2: &Player = players
-        .iter()
-        .filter(|p| matches!(p.port, Port::P2))
-        .collect::<Vec<&Player>>()
-        .pop()
-        .expect("could not find P2");
-
-    let p1_netplay = p1.netplay.as_ref().expect("could not get p1 netplay data");
-    let p1_name = &p1_netplay.name;
-    let p1_code = &p1_netplay.code;
-
-    let p2_netplay = p2.netplay.as_ref().expect("could not get p2 netplay data");
-    let p2_code = &p2_netplay.code;
-    let p2_name = &p2_netplay.name;
-
-    let filename = path.to_str().expect("failed to get filename");
-
-    eprintln!("creating game record");
-    let mut conn = pool.acquire().await.expect("failed to acquire connection");
-    let update = sqlx::query!(
-        "INSERT INTO games (filename, start_time, p1_name, p1_code, p2_name, p2_code) VALUES (?, ?, ?, ?, ?, ?)",
-        filename, start_time, p1_name, p1_code, p2_name, p2_code
-    )
-    .execute(&mut conn)
-    .await
-    .expect("failed to run query");
-
-    let game_id = update.last_insert_rowid();
-    eprintln!("created game record: {game_id}");
-
-    // which player am I?
-    let me: &Player = [(p1_code, p1), (p2_code, p2)]
-        .iter()
-        .filter_map(|(code, player)| (*code == "ACAB#420").then(|| *player))
-        .collect::<Vec<&Player>>()
-        .pop()
-        .expect("failed to find DJAN!");
-
-    for (item_id, history) in &log {
+/// Tokio task to send Peach item records to database worker.
+async fn record_items(tx: Sender<DBCommand>, items: ItemLog, game_id: i64, me: Port) -> App<()> {
+    for (item_id, history) in items {
         // only record my turnips
-        if history.data.owner != me.port {
+        if history.data.owner != me {
             continue;
         }
 
         let kind = format!("{:?}", history.data.kind);
-        eprintln!("sending DB command");
         tx.send(DBCommand::Item {
             game_id: game_id.to_string(),
             item_id: item_id.to_string(),
@@ -319,7 +288,38 @@ async fn read_replay(
         .expect("failed to send");
     }
 
-    Ok(log)
+    Ok(())
+}
+
+/// Tokio task for database updates.
+async fn db_worker(mut rx: Receiver<DBCommand>) -> App<()> {
+    let pool = SqlitePoolOptions::new()
+        .connect(DATABASE_URL)
+        .await
+        .expect("failed");
+    let mut conn = pool.acquire().await.expect("failed to acquire connection");
+    while let Some(cmd) = rx.recv().await {
+        match dbg!(cmd) {
+            DBCommand::Item {
+                game_id,
+                item_id,
+                frame,
+                kind,
+            } => {
+                sqlx::query!(
+                    "INSERT INTO items (game_id, item_id, frame, kind) VALUES (?, ?, ?, ?)",
+                    game_id,
+                    item_id,
+                    frame,
+                    kind
+                )
+                .execute(&mut conn)
+                .await
+                .expect("failed to record item");
+            }
+        }
+    }
+    Ok(())
 }
 
 /// For each argument, recurse through directories to find replays.
@@ -333,29 +333,57 @@ async fn main() {
     MIGRATOR.run(&pool).await.expect("failed");
 
     // open up message queue for db commands
-    let (tx, mut rx) = mpsc::channel::<DBCommand>(32);
-    let db_task = db_worker(&pool, &mut rx);
+    let (tx, rx) = mpsc::channel::<DBCommand>(32);
+    let db_task = tokio::spawn(db_worker(rx));
 
-    // read replay directory
+    // read replay directory, get replay file paths
     let replay_directory = env::args().skip(1).collect::<String>();
     let replays = WalkDir::new(replay_directory)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .map(|e| read_replay(&pool, tx.clone(), e.into_path()))
-        .collect::<Vec<_>>();
-    // let paths = WalkDir::new(path)
-    //     .into_iter()
-    //     .filter_map(|e| e.ok())
-    //     .filter(|e| e.file_type().is_file())
-    //     .map(|e| e.into_path())
-    //     .collect::<Vec<PathBuf>>();
+        .filter_map(|e| (e.file_type().is_file()).then(|| e.into_path()))
+        .collect::<Vec<PathBuf>>();
 
-    use futures::future::{join, join_all};
-    let replay_results = join_all(replays);
+    // tokio tasks for recording items
+    let mut item_tasks = Vec::new();
 
-    let (db_finished, replay_finished) = join(db_task, replay_results).await;
+    // process replay data
+    for replay in &replays {
+        // parse replay with peppi
+        let game = match parse_replay(replay) {
+            Ok(replay) => replay,
+            Err(_) => continue,
+        };
 
-    db_finished.expect("failed");
-    dbg!(replay_finished);
+        // extract metadata
+        let metadata = game_metadata(replay.to_path_buf(), &game).expect("failed to get metadata");
+
+        // create game row in DB, get ID
+        let mut conn = pool.acquire().await.expect("failed to acquire conn");
+        let update = sqlx::query!(
+            "INSERT INTO games (filename, start_time, p1_name, p1_code, p2_name, p2_code) VALUES (?, ?, ?, ?, ?, ?)",
+            metadata.filename, metadata.start_time, metadata.p1_name, metadata.p1_code, metadata.p2_name, metadata.p2_code
+        )
+        .execute(&mut conn)
+        .await
+        .expect("failed to run query");
+        let game_id = update.last_insert_rowid();
+
+        // get all peach items
+        let items: ItemLog = log_items(game).expect("failed");
+
+        // write items to db
+        item_tasks.push(tokio::spawn(record_items(
+            tx.clone(),
+            items,
+            game_id,
+            metadata.my_port,
+        )));
+    }
+
+    // wait for item log tasks to finish
+    join_all(item_tasks).await;
+
+    // wait for db commands to finish
+    db_task.await.expect("failed").expect("db task failed");
 }
