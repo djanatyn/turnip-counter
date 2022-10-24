@@ -40,6 +40,9 @@ When Peach pulls items in melee, the [items pulled are random](https://www.ssbwi
 | Bob-omb                                | —      | 2/768 ≈ 0.260%      |
 | Beam Sword                             | —      | 1/768 ≈ 0.130%      |
 
+Information from ["The Great Turnip Experiment" (Achilles1515)](https://smashboards.com/threads/the-great-turnip-experiment-250k-turnips-later.393954/):
+> I used the 20XX Hack Pack spam input feature, a set of codes to count and display the pull item type, and sped the game up 3x to get fast, and automated results.
+
 ## example usage
 
 With that information, I can compare my **actual frequency** of items pulled vs the **predicted frequency** of items pulled. It's very close! I have 418 replays from this month (October 2022) to analyze:
